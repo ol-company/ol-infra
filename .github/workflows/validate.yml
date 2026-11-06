@@ -15,10 +15,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           repository: ${{ github.repository_owner }}/ol-build-tooling
           path: .tooling
@@ -32,10 +32,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "~1.13"
       - name: Định dạng
@@ -74,17 +74,17 @@ jobs:
     env:
       ACCOUNTS: '{"dev":"${{ vars.DEV_ACCOUNT_ID }}","staging":"${{ vars.STAGING_ACCOUNT_ID }}","prod":"${{ vars.PROD_ACCOUNT_ID }}"}'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "~1.13"
           terraform_wrapper: false
       - name: Tài khoản đích
         id: acct
         run: echo "id=$(echo "$ACCOUNTS" | jq -r '.["${{ matrix.env }}"]')" >> "$GITHUB_OUTPUT"
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::${{ steps.acct.outputs.id }}:role/ol-gha-plan
           aws-region: ${{ vars.AWS_REGION }}
