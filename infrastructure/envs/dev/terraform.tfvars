@@ -1,0 +1,21 @@
+# DEV — tối ưu chi phí: 1 AZ cho task, không NAT, Fargate Spot, tắt ngoài giờ, không WAF
+env                       = "dev"
+region                    = "ap-southeast-1"
+root_domain               = "ol.example.com"
+shared_account_id         = "__SHARED_ACCOUNT_ID__"
+vpc_cidr                  = "10.10.0.0/16"
+az_count                  = 2 # RDS subnet group bắt buộc ≥ 2 AZ
+enable_nat                = false
+single_nat                = true
+rds_instance_class        = "db.t4g.micro"
+rds_multi_az              = false
+rds_backup_retention_days = 1
+deletion_protection       = false
+log_retention_days        = 14
+waf_enabled               = false
+alarm_email               = "phuongnguyen030236@gmail.com"
+budget_usd                = 60
+office_hours_only         = true
+use_spot                  = true
+backup_plan_enabled       = false
+ses_verified_recipients   = ["phuongnguyen030236@gmail.com"]

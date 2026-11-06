@@ -1,0 +1,37 @@
+# Diễn tập khôi phục DB hằng tháng (mặc định staging). Kết quả RTO đo được ghi vào Summary của run.
+name: restore-drill
+
+on:
+  schedule:
+    - cron: '0 2 1 * *' # Ngày 1 hằng tháng, 09:00 giờ Việt Nam
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        options: [staging, prod, dev]
+        default: staging
+
+permissions: {}
+
+jobs:
+  drill:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: ${{ (inputs.env || 'staging') == 'prod' && 'production' || (inputs.env || 'staging') }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.13"
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/ol-gha-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+          role-duration-seconds: 7200
+      - run: bash scripts/restore-drill.sh "${{ inputs.env || 'staging' }}"

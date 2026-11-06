@@ -1,0 +1,93 @@
+# =============================================================================
+# Chế độ phát triển: thay image production bằng container Node chạy source trực tiếp, tự khởi động lại
+# khi sửa code. Dùng kèm: -f compose.yaml -f compose.apps.yaml -f compose.dev.yaml (./ol.ps1 up -Dev)
+#  - Source trên ổ Windows (/mnt/d) không phát sự kiện thay đổi file → nodemon/Vite dùng polling
+#  - node_modules nằm trong volume Docker: nhanh hơn ổ Windows, không lẫn với node_modules của Windows
+#  - Service "*-migrate" cài dependency + chạy migration TRƯỚC, service chính chỉ việc chạy
+# =============================================================================
+x-dev: &dev
+  build:
+    context: ../../ol-build-tooling/dockerfiles/node-dev
+  image: ol-local/node-dev:dev
+  working_dir: /app
+  read_only: false
+
+x-watch: &watch "pnpm dlx nodemon --legacy-watch --watch src --ext ts --exec 'tsx src/main.ts'"
+
+services:
+  # ---------------- IAM ----------------
+  iam-migrate:
+    <<: *dev
+    command: ["sh", "-c", "pnpm install --frozen-lockfile && pnpm run migrate:dev"]
+    environment:
+      NODE_AUTH_TOKEN: ${NODE_AUTH_TOKEN}
+    volumes: &iam-vol
+      - ../../ol-iam-service:/app
+      - iam_node_modules:/app/node_modules
+      - pnpm_store:/pnpm/store
+      - ./certs/rootCA.pem:/certs/rootCA.pem:ro
+  iam-service:
+    <<: *dev
+    command: ["sh", "-c", *watch]
+    volumes: *iam-vol
+    healthcheck:   # Image dev không có HEALTHCHECK như image production → khai báo ở đây
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      retries: 30
+      start_period: 60s
+
+  # ---------------- Warehouse ----------------
+  warehouse-migrate:
+    <<: *dev
+    command: ["sh", "-c", "pnpm install --frozen-lockfile && pnpm run migrate:dev"]
+    environment:
+      NODE_AUTH_TOKEN: ${NODE_AUTH_TOKEN}
+    volumes: &wh-vol
+      - ../../ol-warehouse-service:/app
+      - warehouse_node_modules:/app/node_modules
+      - pnpm_store:/pnpm/store
+      - ./certs/rootCA.pem:/certs/rootCA.pem:ro
+  warehouse-service:
+    <<: *dev
+    command: ["sh", "-c", *watch]
+    volumes: *wh-vol
+
+  # ---------------- BFF ----------------
+  bff-migrate:
+    <<: *dev
+    command: ["sh", "-c", "pnpm install --frozen-lockfile && pnpm run migrate:dev"]
+    environment:
+      NODE_AUTH_TOKEN: ${NODE_AUTH_TOKEN}
+    volumes: &bff-vol
+      - ../../ol-bff:/app
+      - bff_node_modules:/app/node_modules
+      - pnpm_store:/pnpm/store
+      - ./certs/rootCA.pem:/certs/rootCA.pem:ro
+  bff:
+    <<: *dev
+    command: ["sh", "-c", *watch]
+    volumes: *bff-vol
+
+  # ---------------- Frontend: Vite dev server sau Caddy ----------------
+  web-admin:
+    <<: *dev
+    command: ["sh", "-c", "pnpm install --frozen-lockfile && pnpm run dev"]
+    environment:
+      VITE_POLL: "1"
+      VITE_HMR_HOST: app.ol.test        # Hot reload qua wss://app.ol.test
+      NODE_AUTH_TOKEN: ${NODE_AUTH_TOKEN}
+    volumes:
+      - ../../ol-web-admin:/app
+      - web_node_modules:/app/node_modules
+      - pnpm_store:/pnpm/store
+
+  caddy:
+    environment:
+      WEB_UPSTREAM: web-admin:5173
+
+volumes:
+  iam_node_modules:
+  warehouse_node_modules:
+  bff_node_modules:
+  web_node_modules:
+  pnpm_store:

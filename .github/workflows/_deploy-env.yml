@@ -1,0 +1,112 @@
+# Workflow con (gọi từ deploy.yml): triển khai MỘT môi trường → smoke test → E2E → mở PR thăng cấp.
+name: deploy-env
+
+on:
+  workflow_call:
+    inputs:
+      env:
+        type: string
+        required: true
+      github-environment:
+        type: string
+        required: true
+      next:
+        type: string
+        default: ''
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: ${{ inputs.env }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: ${{ inputs.github-environment }} # Luật duyệt + chỉ nhánh main + biến AWS_ACCOUNT_ID
+    concurrency:
+      group: deploy-${{ inputs.env }}
+      cancel-in-progress: false # Không bao giờ hủy giữa chừng một lần deploy
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read # Đọc attestation để kiểm chứng artifact
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.13"
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/ol-gha-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+          role-duration-seconds: 7200
+
+      - name: Kiểm chứng artifact (đúng digest, có provenance của build-image.yml)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          SHARED_ACCOUNT_ID: ${{ vars.SHARED_ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: bash scripts/verify-artifacts.sh "${{ inputs.env }}"
+
+      - name: Triển khai
+        run: bash scripts/deploy.sh "${{ inputs.env }}"
+
+      - name: Smoke test
+        run: |
+          source scripts/lib.sh
+          bash scripts/smoke.sh "$(tf_out ${{ inputs.env }} app_url)" "$(tf_out ${{ inputs.env }} id_url)"
+
+      # E2E qua trình duyệt thật — chỉ chạy khi môi trường có tài khoản kiểm thử (biến E2E_ENABLED=true)
+      - name: Lấy test E2E từ ol-web-admin
+        if: vars.E2E_ENABLED == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository_owner }}/ol-web-admin
+          path: web
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        if: vars.E2E_ENABLED == 'true'
+        with:
+          version: 10
+      - uses: actions/setup-node@v5
+        if: vars.E2E_ENABLED == 'true'
+        with:
+          node-version-file: web/.node-version
+      - name: E2E
+        if: vars.E2E_ENABLED == 'true'
+        working-directory: web
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          E2E_OPERATOR_EMAIL: ${{ vars.E2E_OPERATOR_EMAIL }}
+          E2E_VIEWER_EMAIL: ${{ vars.E2E_VIEWER_EMAIL }}
+          CI: 'true'
+        run: |
+          source ../scripts/lib.sh
+          BASE_URL="$(cd .. && tf_out ${{ inputs.env }} app_url)"
+          export BASE_URL
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+          pnpm run e2e
+
+      - name: Token GitHub App
+        id: app
+        if: inputs.next != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.OL_APP_ID }}
+          private-key: ${{ secrets.OL_APP_PRIVATE_KEY }}
+          repositories: ol-infra
+          permission-contents: write
+          permission-pull-requests: write
+          permission-actions: write
+      - name: Mở PR thăng cấp sang ${{ inputs.next }}
+        if: inputs.next != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          bash scripts/promote.sh "${{ inputs.env }}" "${{ inputs.next }}"

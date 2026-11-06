@@ -1,0 +1,81 @@
+# =============================================================================
+# Triển khai khi main của ol-infra thay đổi. Chỉ môi trường có file thay đổi mới chạy.
+# dev thành công → PR thăng cấp staging (tự merge) → staging thành công → PR thăng cấp prod (cần duyệt)
+# → merge → job prod chờ người duyệt của environment "production" → triển khai.
+# =============================================================================
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths: ['deploy/**', 'infrastructure/envs/**', 'infrastructure/modules/**', 'db/**']
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Môi trường triển khai lại
+        type: choice
+        options: [dev, staging, prod]
+
+permissions: {}
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      dev: ${{ steps.c.outputs.dev }}
+      staging: ${{ steps.c.outputs.staging }}
+      prod: ${{ steps.c.outputs.prod }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: c
+        env:
+          INPUT_ENV: ${{ inputs.env }}
+        run: |
+          # Squash-merge → mỗi lần push là 1 commit; so với commit trước để biết môi trường nào đổi
+          files=$(git diff --name-only HEAD~1 HEAD)
+          for e in dev staging prod; do
+            hit=false
+            [[ "$INPUT_ENV" == "$e" ]] && hit=true
+            grep -Eq "^(deploy/$e/|infrastructure/envs/$e/)" <<<"$files" && hit=true
+            # Thay đổi module dùng chung chỉ tự chạy dev; staging/prod nhận qua PR thăng cấp hoặc chạy tay
+            [[ "$e" == "dev" ]] && grep -Eq '^(infrastructure/modules/|db/)' <<<"$files" && hit=true
+            echo "$e=$hit" >> "$GITHUB_OUTPUT"
+          done
+
+  dev:
+    needs: changes
+    if: needs.changes.outputs.dev == 'true'
+    uses: ./.github/workflows/_deploy-env.yml
+    with: { env: dev, github-environment: dev, next: staging }
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+
+  staging:
+    needs: [changes, dev]
+    if: always() && needs.changes.outputs.staging == 'true' && needs.dev.result != 'failure'
+    uses: ./.github/workflows/_deploy-env.yml
+    with: { env: staging, github-environment: staging, next: prod }
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+
+  prod:
+    needs: [changes, staging]
+    if: always() && needs.changes.outputs.prod == 'true' && needs.staging.result != 'failure'
+    uses: ./.github/workflows/_deploy-env.yml
+    with: { env: prod, github-environment: production }
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read

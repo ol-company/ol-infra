@@ -1,0 +1,37 @@
+# Caddy mô phỏng đúng định tuyến của ALB trên AWS:
+#   app.ol.test  /api/* /auth/* /health/*  → BFF
+#   app.ol.test  còn lại                   → frontend (nginx, hoặc Vite khi chạy chế độ dev)
+#   id.ol.test                             → Keycloak
+# Chứng chỉ do mkcert tạo (./ol.ps1 certs), được Windows tin cậy → trình duyệt không cảnh báo.
+{
+	admin off
+}
+
+app.ol.test {
+	tls /certs/ol.test.pem /certs/ol.test-key.pem
+	encode zstd gzip
+
+	@bff path /api/* /auth/* /health/*
+	handle @bff {
+		reverse_proxy bff:3000
+	}
+	handle {
+		reverse_proxy {$WEB_UPSTREAM}
+	}
+}
+
+id.ol.test {
+	tls /certs/ol.test.pem /certs/ol.test-key.pem
+	# Local CHO PHÉP admin console để học (https://id.ol.test/admin). Trên AWS, ALB chặn /admin và /realms/master.
+	reverse_proxy keycloak:8080
+}
+
+mail.ol.test {
+	tls /certs/ol.test.pem /certs/ol.test-key.pem
+	reverse_proxy mailpit:8025
+}
+
+grafana.ol.test {
+	tls /certs/ol.test.pem /certs/ol.test-key.pem
+	reverse_proxy lgtm:3000
+}

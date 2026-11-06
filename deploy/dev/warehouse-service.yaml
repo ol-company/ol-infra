@@ -1,0 +1,21 @@
+# Trạng thái triển khai mong muốn của warehouse-service ở môi trường dev.
+# image.digest và source.* do bot cập nhật qua Pull Request (build-image → open-deploy-pr.sh).
+# runtime.* do con người sửa qua PR. Terraform đọc file này khi deploy.
+module: warehouse-service
+image:
+  digest: ""   # sha256:... — rỗng nghĩa là chưa từng build, Terraform bỏ qua module này
+source:
+  repository: ol-company/ol-warehouse-service
+  revision: ""
+  version: ""
+  configRevision: ""
+  toolingRevision: ""
+runtime:
+  cpu: 256            # Đơn vị CPU của Fargate (1024 = 1 vCPU)
+  memory: 512         # MiB
+  desiredCount: 1
+  minCount: 1
+  maxCount: 2         # Autoscaling theo CPU 60%
+  env:
+    LOG_LEVEL: "debug"
+    AUTHZ_CACHE_TTL_SECONDS: "30"

@@ -1,0 +1,140 @@
+# =============================================================================
+# Hạ tầng LOCAL dùng chung: PostgreSQL, Keycloak, cấu hình realm, Mailpit, Grafana LGTM, Caddy (HTTPS).
+# Chạy kèm compose.apps.yaml (image build giống production) hoặc compose.dev.yaml (hot reload).
+# Mọi lệnh nên chạy qua ./ol.ps1 (Windows) — script lo phần WSL, token và đường dẫn.
+# Biến ${...} đọc từ file .env cạnh file này (tạo bằng: ./ol.ps1 env) — .env KHÔNG được commit.
+# =============================================================================
+name: ol-platform
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }   # Giới hạn log để không đầy ổ đĩa
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Chạy ./ol.ps1 env để tạo .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"            # Chỉ mở cho máy local (công cụ DB, test)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *logging
+
+  # Tạo role/database/schema cho mọi service — cùng script với AWS (ol-infra/db/bootstrap.sql)
+  db-init:
+    image: postgres:17-alpine
+    depends_on:
+      postgres: { condition: service_healthy }
+    volumes:
+      - ../db/bootstrap.sql:/bootstrap.sql:ro
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      KC_PW: ${KEYCLOAK_DB_PASSWORD}
+      IAM_APP_PW: ${IAM_APP_DB_PASSWORD}
+      IAM_MIG_PW: ${IAM_MIGRATOR_DB_PASSWORD}
+      WH_APP_PW: ${WAREHOUSE_APP_DB_PASSWORD}
+      WH_MIG_PW: ${WAREHOUSE_MIGRATOR_DB_PASSWORD}
+      BFF_APP_PW: ${BFF_APP_DB_PASSWORD}
+      BFF_MIG_PW: ${BFF_MIGRATOR_DB_PASSWORD}
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        psql -v keycloak_password="$$KC_PW" -v iam_app_password="$$IAM_APP_PW" -v iam_migrator_password="$$IAM_MIG_PW"
+        -v warehouse_app_password="$$WH_APP_PW" -v warehouse_migrator_password="$$WH_MIG_PW"
+        -v bff_app_password="$$BFF_APP_PW" -v bff_migrator_password="$$BFF_MIG_PW" -f /bootstrap.sql
+    restart: "no"
+    logging: *logging
+
+  keycloak:
+    build:
+      context: ../../ol-build-tooling/dockerfiles/keycloak   # Cùng Dockerfile với production
+    image: ol-local/keycloak:dev
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+    environment:
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_HOSTNAME: https://id.ol.test                 # URL công khai → issuer của token
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"         # Service gọi nội bộ http://keycloak:8080
+      KC_HTTP_ENABLED: "true"                         # TLS kết thúc ở Caddy
+      KC_PROXY_HEADERS: xforwarded
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin              # Admin tạm của master realm, chỉ dùng local/cấu hình
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q 'HTTP/1.1 200' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    logging: *logging
+
+  # Áp cấu hình realm "ol" (client, scope, chính sách) — chạy xong thì thoát
+  keycloak-config:
+    build:
+      context: ../keycloak
+      dockerfile: ../../ol-build-tooling/dockerfiles/keycloak-config/Dockerfile
+    image: ol-local/keycloak-config:dev
+    depends_on:
+      keycloak: { condition: service_healthy }
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_USER: admin
+      KEYCLOAK_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KEYCLOAK_AVAILABILITYCHECK_ENABLED: "true"
+      APP_URL: https://app.ol.test
+      BFF_BACKCHANNEL_LOGOUT_URL: http://bff:3000/auth/backchannel-logout
+      BFF_CLIENT_SECRET: ${BFF_CLIENT_SECRET}
+      IAM_CLIENT_SECRET: ${IAM_CLIENT_SECRET}
+      WAREHOUSE_CLIENT_SECRET: ${WAREHOUSE_CLIENT_SECRET}
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_FROM: noreply@ol.test
+      SMTP_AUTH: "false"
+      SMTP_STARTTLS: "false"
+      SMTP_USER: ""
+      SMTP_PASSWORD: ""
+    restart: "no"
+    logging: *logging
+
+  # Bắt mọi email (mời, xác minh, quên mật khẩu) — xem tại https://mail.ol.test
+  mailpit:
+    image: axllent/mailpit:v1.27      # [CHƯA XÁC MINH] tag; xem https://hub.docker.com/r/axllent/mailpit/tags
+    logging: *logging
+
+  # Grafana + Loki + Tempo + Prometheus trong một container nhận OTLP — xem tại https://grafana.ol.test
+  lgtm:
+    image: grafana/otel-lgtm:latest   # Chỉ dùng local; production dùng CloudWatch/X-Ray
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      WEB_UPSTREAM: ${WEB_UPSTREAM:-web-admin:8080}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro
+      - caddy_data:/data
+    networks:
+      default:
+        # Container khác gọi https://id.ol.test / https://app.ol.test sẽ đi qua Caddy giống trình duyệt
+        aliases: [app.ol.test, id.ol.test]
+    logging: *logging
+
+volumes:
+  pgdata:
+  caddy_data:

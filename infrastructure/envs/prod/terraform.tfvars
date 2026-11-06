@@ -1,0 +1,20 @@
+# PRODUCTION — task trong private subnet sau NAT, RDS Multi-AZ, WAF, backup dài hạn, chống xóa nhầm
+env                       = "prod"
+region                    = "ap-southeast-1"
+root_domain               = "ol.example.com"
+shared_account_id         = "__SHARED_ACCOUNT_ID__"
+vpc_cidr                  = "10.30.0.0/16"
+az_count                  = 2
+enable_nat                = true
+single_nat                = true # Đánh đổi chi phí: 1 NAT; đổi false khi cần chịu lỗi cả AZ cho đường ra Internet
+rds_instance_class        = "db.t4g.small"
+rds_multi_az              = true
+rds_backup_retention_days = 14
+deletion_protection       = true
+log_retention_days        = 90
+waf_enabled               = true
+alarm_email               = "phuongnguyen030236@gmail.com"
+budget_usd                = 250
+office_hours_only         = false
+use_spot                  = false
+backup_plan_enabled       = true

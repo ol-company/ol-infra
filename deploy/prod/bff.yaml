@@ -1,0 +1,23 @@
+# Trạng thái triển khai mong muốn của bff ở môi trường prod.
+# image.digest và source.* do bot cập nhật qua Pull Request (build-image → open-deploy-pr.sh).
+# runtime.* do con người sửa qua PR. Terraform đọc file này khi deploy.
+module: bff
+image:
+  digest: ""   # sha256:... — rỗng nghĩa là chưa từng build, Terraform bỏ qua module này
+source:
+  repository: ol-company/ol-bff
+  revision: ""
+  version: ""
+  configRevision: ""
+  toolingRevision: ""
+runtime:
+  cpu: 512            # Đơn vị CPU của Fargate (1024 = 1 vCPU)
+  memory: 1024         # MiB
+  desiredCount: 2
+  minCount: 2
+  maxCount: 6         # Autoscaling theo CPU 60%
+  env:
+    LOG_LEVEL: "info"
+    SESSION_IDLE_MINUTES: "30"
+    SESSION_ABSOLUTE_HOURS: "8"
+    RATE_LIMIT_PER_MINUTE: "300"

@@ -1,0 +1,158 @@
+# =============================================================================
+# Ứng dụng chạy bằng IMAGE build từ Dockerfile tập trung (giống production).
+# docker compose -f compose.yaml -f compose.apps.yaml up -d --build
+# Source các repo phải nằm cạnh nhau: ../../ol-iam-service, ../../ol-web-admin ...
+# =============================================================================
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+x-node-build: &node-build
+  dockerfile: ../ol-build-tooling/dockerfiles/node-service/Dockerfile   # Tương đối với context
+  secrets: [npm_token]                                                   # BuildKit secret, không vào image
+
+x-app-env: &app-env
+  APP_ENV: local
+  LOG_LEVEL: debug
+  OIDC_ISSUER: https://id.ol.test/realms/ol
+  OIDC_INTERNAL_ISSUER: http://keycloak:8080/realms/ol
+  KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+  DB_HOST: postgres
+  DRAIN_DELAY_MS: "0"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+  NODE_EXTRA_CA_CERTS: /certs/rootCA.pem          # Tin chứng chỉ mkcert khi gọi https://*.ol.test
+
+x-hardening: &hardening
+  read_only: true                 # Root filesystem chỉ đọc, giống ECS
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+
+services:
+  # ---------------- IAM ----------------
+  iam-migrate:
+    build: { context: ../../ol-iam-service, <<: *node-build }
+    image: ol-local/iam-service:dev
+    command: ["node", "--enable-source-maps", "dist/migrate.js"]
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+    environment:
+      <<: *app-env
+      DB_NAME: iam
+      DB_USER: iam_migrator
+      DB_PASSWORD: ${IAM_MIGRATOR_DB_PASSWORD}
+    restart: "no"
+    <<: *hardening
+    logging: *logging
+
+  iam-service:
+    build: { context: ../../ol-iam-service, <<: *node-build }
+    image: ol-local/iam-service:dev
+    depends_on:
+      iam-migrate: { condition: service_completed_successfully }
+      keycloak-config: { condition: service_completed_successfully }
+    environment:
+      <<: *app-env
+      OTEL_SERVICE_NAME: iam-service
+      DB_NAME: iam
+      DB_USER: iam_app
+      DB_PASSWORD: ${IAM_APP_DB_PASSWORD}
+      IAM_CLIENT_SECRET: ${IAM_CLIENT_SECRET}
+      APP_URL: https://app.ol.test
+      SEED_PASSWORD: ${SEED_PASSWORD}
+    volumes:
+      - ./certs/rootCA.pem:/certs/rootCA.pem:ro
+    <<: *hardening
+    logging: *logging
+
+  # ---------------- Warehouse ----------------
+  warehouse-migrate:
+    build: { context: ../../ol-warehouse-service, <<: *node-build }
+    image: ol-local/warehouse-service:dev
+    command: ["node", "--enable-source-maps", "dist/migrate.js"]
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+    environment:
+      <<: *app-env
+      DB_NAME: warehouse
+      DB_USER: warehouse_migrator
+      DB_PASSWORD: ${WAREHOUSE_MIGRATOR_DB_PASSWORD}
+    restart: "no"
+    <<: *hardening
+    logging: *logging
+
+  warehouse-service:
+    build: { context: ../../ol-warehouse-service, <<: *node-build }
+    image: ol-local/warehouse-service:dev
+    depends_on:
+      warehouse-migrate: { condition: service_completed_successfully }
+      iam-service: { condition: service_healthy }
+    environment:
+      <<: *app-env
+      OTEL_SERVICE_NAME: warehouse-service
+      DB_NAME: warehouse
+      DB_USER: warehouse_app
+      DB_PASSWORD: ${WAREHOUSE_APP_DB_PASSWORD}
+      WAREHOUSE_CLIENT_SECRET: ${WAREHOUSE_CLIENT_SECRET}
+      IAM_INTERNAL_URL: http://iam-service:3000
+    volumes:
+      - ./certs/rootCA.pem:/certs/rootCA.pem:ro
+    <<: *hardening
+    logging: *logging
+
+  # ---------------- BFF ----------------
+  bff-migrate:
+    build: { context: ../../ol-bff, <<: *node-build }
+    image: ol-local/bff:dev
+    command: ["node", "--enable-source-maps", "dist/migrate.js"]
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+    environment:
+      <<: *app-env
+      DB_NAME: bff
+      DB_USER: bff_migrator
+      DB_PASSWORD: ${BFF_MIGRATOR_DB_PASSWORD}
+    restart: "no"
+    <<: *hardening
+    logging: *logging
+
+  bff:
+    build: { context: ../../ol-bff, <<: *node-build }
+    image: ol-local/bff:dev
+    depends_on:
+      bff-migrate: { condition: service_completed_successfully }
+      keycloak-config: { condition: service_completed_successfully }
+    environment:
+      <<: *app-env
+      OTEL_SERVICE_NAME: bff
+      DB_NAME: bff
+      DB_USER: bff_app
+      DB_PASSWORD: ${BFF_APP_DB_PASSWORD}
+      APP_URL: https://app.ol.test
+      OIDC_CLIENT_SECRET: ${BFF_CLIENT_SECRET}
+      SESSION_ENC_KEY: ${BFF_SESSION_ENC_KEY}
+      IAM_INTERNAL_URL: http://iam-service:3000
+      WAREHOUSE_INTERNAL_URL: http://warehouse-service:3000
+    volumes:
+      - ./certs/rootCA.pem:/certs/rootCA.pem:ro
+    <<: *hardening
+    logging: *logging
+
+  # ---------------- Frontend ----------------
+  web-admin:
+    build:
+      context: ../../ol-web-admin
+      dockerfile: ../ol-build-tooling/dockerfiles/web-static/Dockerfile
+      additional_contexts:
+        tooling: ../../ol-build-tooling/dockerfiles/web-static   # Named context "tooling" trong Dockerfile
+      secrets: [npm_token]
+    image: ol-local/web-admin:dev
+    environment:
+      APP_ENV: local
+    read_only: true
+    tmpfs: [/tmp]
+    logging: *logging
+
+secrets:
+  npm_token:
+    environment: NODE_AUTH_TOKEN   # ol.ps1 đặt biến này từ "gh auth token" trước khi build

@@ -1,0 +1,146 @@
+# =============================================================================
+# Cấu hình realm "ol" dạng code — áp dụng bằng keycloak-config-cli (idempotent).
+# $(env:TÊN) được thay bằng biến môi trường lúc chạy → file này KHÔNG chứa bí mật.
+# Tài liệu thuộc tính realm: https://www.keycloak.org/docs-api/latest/rest-api/#RealmRepresentation
+# =============================================================================
+realm: ol
+enabled: true
+displayName: OL-Platform
+sslRequired: external                 # Bắt buộc HTTPS với mọi request không đến từ mạng nội bộ
+
+# --- Đăng ký & đăng nhập: không cho tự đăng ký, chỉ người được mời ---
+registrationAllowed: false
+registrationEmailAsUsername: true
+loginWithEmailAllowed: true
+duplicateEmailsAllowed: false
+editUsernameAllowed: false
+verifyEmail: true                     # Phải xác minh email trước khi dùng
+resetPasswordAllowed: true            # "Quên mật khẩu" tự phục vụ (khôi phục tài khoản)
+rememberMe: false
+
+# --- Chống dò mật khẩu ---
+bruteForceProtected: true
+failureFactor: 10                     # 10 lần sai → khóa tạm
+waitIncrementSeconds: 60
+maxFailureWaitSeconds: 900
+permanentLockout: false
+
+# --- Chính sách mật khẩu ---
+passwordPolicy: "length(12) and notUsername and notEmail and passwordHistory(5)"
+
+# --- MFA (TOTP): bắt buộc qua required action CONFIGURE_TOTP cho người có role quản trị ---
+otpPolicyType: totp
+otpPolicyAlgorithm: HmacSHA1
+otpPolicyDigits: 6
+otpPolicyPeriod: 30
+
+# --- Vòng đời token & phiên (khớp NFR ở Bước 0) ---
+accessTokenLifespan: 300              # Access token sống 5 phút
+ssoSessionIdleTimeout: 1800           # Phiên SSO hết hạn sau 30 phút không hoạt động
+ssoSessionMaxLifespan: 28800          # Tối đa 8 giờ
+revokeRefreshToken: true              # Mỗi refresh token chỉ dùng 1 lần (rotation)
+refreshTokenMaxReuse: 0
+
+# --- Nhật ký sự kiện đăng nhập và quản trị (audit phía Identity Provider) ---
+eventsEnabled: true
+eventsExpiration: 2592000             # Giữ 30 ngày trong DB Keycloak; log tập trung giữ lâu hơn
+adminEventsEnabled: true
+adminEventsDetailsEnabled: true
+
+# --- Email (mời, xác minh, quên mật khẩu). Local: Mailpit; AWS: Amazon SES SMTP ---
+smtpServer:
+  host: "$(env:SMTP_HOST)"
+  port: "$(env:SMTP_PORT)"
+  from: "$(env:SMTP_FROM)"
+  fromDisplayName: "OL-Platform"
+  auth: "$(env:SMTP_AUTH)"
+  starttls: "$(env:SMTP_STARTTLS)"
+  user: "$(env:SMTP_USER)"
+  password: "$(env:SMTP_PASSWORD)"
+
+# --- Scope gắn audience "ol-api" vào access token → service chỉ nhận token dành cho API của platform ---
+clientScopes:
+  - name: ol-api-audience
+    description: Thêm aud=ol-api vào access token
+    protocol: openid-connect
+    attributes:
+      include.in.token.scope: "false"
+      display.on.consent.screen: "false"
+    protocolMappers:
+      - name: audience-ol-api
+        protocol: openid-connect
+        protocolMapper: oidc-audience-mapper
+        consentRequired: false
+        config:
+          included.custom.audience: ol-api
+          access.token.claim: "true"
+          id.token.claim: "false"
+          introspection.token.claim: "true"
+
+clients:
+  # BFF: confidential client, Authorization Code + PKCE, không có implicit/password grant
+  - clientId: ol-bff
+    name: OL-Platform BFF
+    enabled: true
+    protocol: openid-connect
+    publicClient: false
+    clientAuthenticatorType: client-secret
+    secret: "$(env:BFF_CLIENT_SECRET)"
+    standardFlowEnabled: true
+    implicitFlowEnabled: false
+    directAccessGrantsEnabled: false
+    serviceAccountsEnabled: false
+    frontchannelLogout: false
+    redirectUris:
+      - "$(env:APP_URL)/auth/callback"     # Khớp chính xác, không dùng wildcard
+      - "$(env:APP_URL)/"                  # Trang quay về sau khi hoàn tất email mời/đặt lại mật khẩu
+    webOrigins: []                         # Không bật CORS — trình duyệt không gọi Keycloak bằng JS
+    attributes:
+      pkce.code.challenge.method: S256
+      post.logout.redirect.uris: "$(env:APP_URL)/"
+      backchannel.logout.url: "$(env:BFF_BACKCHANNEL_LOGOUT_URL)"
+      backchannel.logout.session.required: "true"
+      backchannel.logout.revoke.offline.tokens: "true"
+    defaultClientScopes: [basic, acr, profile, email, ol-api-audience]
+    optionalClientScopes: []
+
+  # IAM service: danh tính service (client credentials) + quyền quản lý user trong realm
+  - clientId: ol-iam-service
+    name: OL-Platform IAM service
+    enabled: true
+    protocol: openid-connect
+    publicClient: false
+    clientAuthenticatorType: client-secret
+    secret: "$(env:IAM_CLIENT_SECRET)"
+    standardFlowEnabled: false
+    implicitFlowEnabled: false
+    directAccessGrantsEnabled: false
+    serviceAccountsEnabled: true
+    defaultClientScopes: [basic, profile, ol-api-audience]
+    optionalClientScopes: []
+
+  # Warehouse service: danh tính service để gọi IAM authorize
+  - clientId: ol-warehouse-service
+    name: OL-Platform Warehouse service
+    enabled: true
+    protocol: openid-connect
+    publicClient: false
+    clientAuthenticatorType: client-secret
+    secret: "$(env:WAREHOUSE_CLIENT_SECRET)"
+    standardFlowEnabled: false
+    implicitFlowEnabled: false
+    directAccessGrantsEnabled: false
+    serviceAccountsEnabled: true
+    defaultClientScopes: [basic, profile, ol-api-audience]
+    optionalClientScopes: []
+
+# Quyền quản lý user cho service account của IAM (least privilege: không có manage-realm, manage-clients)
+users:
+  - username: service-account-ol-iam-service
+    enabled: true
+    serviceAccountClientId: ol-iam-service
+    clientRoles:
+      realm-management:
+        - manage-users
+        - view-users
+        - query-users

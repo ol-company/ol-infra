@@ -1,0 +1,7 @@
+region             = "ap-southeast-1"
+aws_profile        = "ol-prod-admin"
+github_org         = "ol-company"
+env                = "prod"
+github_environment = "production"
+state_bucket       = "__STATE_BUCKET__"
+shared_account_id  = "__SHARED_ACCOUNT_ID__"
