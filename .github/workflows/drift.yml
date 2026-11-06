@@ -1,0 +1,57 @@
+# Mỗi ngày kiểm tra hạ tầng thật có lệch so với code (ai đó sửa tay trên console?) → mở issue nếu lệch.
+name: drift
+
+on:
+  schedule:
+    - cron: '0 1 * * *' # 08:00 giờ Việt Nam
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, staging, prod]
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    env:
+      ACCOUNTS: '{"dev":"${{ vars.DEV_ACCOUNT_ID }}","staging":"${{ vars.STAGING_ACCOUNT_ID }}","prod":"${{ vars.PROD_ACCOUNT_ID }}"}'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.13"
+          terraform_wrapper: false
+      - id: acct
+        run: echo "id=$(echo "$ACCOUNTS" | jq -r '.["${{ matrix.env }}"]')" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ steps.acct.outputs.id }}:role/ol-gha-plan
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Plan phát hiện lệch
+        id: plan
+        working-directory: infrastructure/envs/${{ matrix.env }}
+        run: |
+          terraform init -input=false -backend-config=backend.hcl
+          set +e
+          terraform plan -input=false -lock=false -detailed-exitcode -no-color > plan.txt
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"   # 0: khớp, 2: có thay đổi, 1: lỗi
+          [[ $code -ne 1 ]]
+      - name: Mở issue khi có lệch
+        if: steps.plan.outputs.code == '2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Drift: hạ tầng ${{ matrix.env }} lệch so với code"
+          body="Workflow drift phát hiện thay đổi ngoài Terraform. Xem run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
+          if [[ -n "$existing" ]]; then gh issue comment "$existing" --body "$body"; else gh issue create --title "$title" --body "$body"; fi

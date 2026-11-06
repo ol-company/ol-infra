@@ -1,0 +1,19 @@
+# Trạng thái triển khai mong muốn của keycloak-config ở môi trường staging.
+# image.digest và source.* do bot cập nhật qua Pull Request (build-image → open-deploy-pr.sh).
+# runtime.* do con người sửa qua PR. Terraform đọc file này khi deploy.
+module: keycloak-config
+image:
+  digest: ""   # sha256:... — rỗng nghĩa là chưa từng build, Terraform bỏ qua module này
+source:
+  repository: ol-company/ol-infra
+  revision: ""
+  version: ""
+  configRevision: ""
+  toolingRevision: ""
+runtime:
+  cpu: 256
+  memory: 512
+  desiredCount: 0   # Task chạy một lần, không phải service
+  minCount: 0
+  maxCount: 0
+  env: {}

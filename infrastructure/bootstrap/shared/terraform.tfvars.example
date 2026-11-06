@@ -1,0 +1,10 @@
+# Sao chép thành terraform.tfvars (không commit nếu chứa thông tin bạn coi là nhạy cảm)
+region          = "ap-southeast-1"
+aws_profile     = "ol-shared-admin"
+github_org      = "ol-company"
+organization_id = "__ORG_ID__"
+env_account_ids = {
+  dev     = "__DEV_ACCOUNT_ID__"
+  staging = "__STAGING_ACCOUNT_ID__"
+  prod    = "__PROD_ACCOUNT_ID__"
+}

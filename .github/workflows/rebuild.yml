@@ -1,0 +1,75 @@
+# Build lại image khi CẤU HÌNH BUILD thay đổi (build-config/**) hoặc cấu hình realm (keycloak/**),
+# hoặc chạy tay cho một module/môi trường. Mỗi image build xong tự mở PR cập nhật deploy/<env>.
+name: rebuild
+
+on:
+  push:
+    branches: [main]
+    paths: ['build-config/**', 'keycloak/**']
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        options: [dev, staging, prod]
+      module:
+        type: choice
+        options: [iam-service, warehouse-service, bff, web-admin, keycloak, keycloak-config]
+
+permissions: {}
+
+jobs:
+  detect:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: m
+        env:
+          IN_ENV: ${{ inputs.env }}
+          IN_MODULE: ${{ inputs.module }}
+        run: |
+          if [[ -n "$IN_ENV" ]]; then
+            pairs="$IN_ENV/$IN_MODULE"
+          else
+            changed=$(git diff --name-only HEAD~1 HEAD)
+            pairs=$(grep -E '^build-config/' <<<"$changed" | sed -E 's#build-config/([a-z]+)/([a-z-]+)\.env#\1/\2#' || true)
+            grep -Eq '^keycloak/' <<<"$changed" && pairs="$pairs dev/keycloak-config"
+          fi
+          items=()
+          for p in $pairs; do
+            env=${p%/*}; m=${p#*/}
+            if [[ "$m" == "keycloak-config" ]]; then
+              repo="$GITHUB_REPOSITORY"; rev="$GITHUB_SHA"          # Source của module này là chính ol-infra
+            else
+              repo=$(yq '.source.repository' "deploy/$env/$m.yaml"); rev=$(yq '.source.revision' "deploy/$env/$m.yaml")
+              [[ -n "$rev" && "$rev" != "null" ]] || { echo "Bỏ qua $p: chưa từng build"; continue; }
+            fi
+            items+=("{\"env\":\"$env\",\"module\":\"$m\",\"repo\":\"$repo\",\"rev\":\"$rev\"}")
+          done
+          echo "matrix={\"include\":[$(IFS=,; echo "${items[*]}")]}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect
+    if: fromJSON(needs.detect.outputs.matrix).include[0] != null
+    strategy:
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
+    uses: ol-company/ol-build-tooling/.github/workflows/build-image.yml@v1.0.0
+    with:
+      module: ${{ matrix.module }}
+      source-repository: ${{ matrix.repo }}
+      source-ref: ${{ matrix.rev }}
+      target-env: ${{ matrix.env }}
+      config-ref: ${{ github.sha }}
+      update-infra-env: ${{ matrix.env }}
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+      attestations: write

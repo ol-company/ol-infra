@@ -1,0 +1,101 @@
+# Kiểm tra mọi thay đổi của ol-infra trước khi merge: cấu hình, Terraform, bảo mật, plan theo môi trường.
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  config:
+    name: config
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository_owner }}/ol-build-tooling
+          path: .tooling
+          persist-credentials: false
+      - name: Kiểm tra deploy/*.yaml và build-config/*.env
+        run: bash scripts/validate-config.sh .tooling/scripts/validate-build-config.sh
+
+  terraform:
+    name: terraform
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.13"
+      - name: Định dạng
+        run: terraform fmt -check -recursive infrastructure
+      - name: Validate từng thư mục gốc
+        run: |
+          for d in infrastructure/envs/* infrastructure/bootstrap/*; do
+            echo "== $d"
+            terraform -chdir="$d" init -backend=false -input=false >/dev/null
+            terraform -chdir="$d" validate
+          done
+
+  security:
+    uses: ol-company/ol-build-tooling/.github/workflows/security-scan.yml@v1.0.0
+    with:
+      codeql-languages: ''
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+      pull-requests: write
+
+  # Plan cho từng môi trường bị ảnh hưởng — hiển thị trong Summary của PR để review
+  plan:
+    name: plan-${{ matrix.env }}
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: [config, terraform]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, staging, prod]
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ACCOUNTS: '{"dev":"${{ vars.DEV_ACCOUNT_ID }}","staging":"${{ vars.STAGING_ACCOUNT_ID }}","prod":"${{ vars.PROD_ACCOUNT_ID }}"}'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.13"
+          terraform_wrapper: false
+      - name: Tài khoản đích
+        id: acct
+        run: echo "id=$(echo "$ACCOUNTS" | jq -r '.["${{ matrix.env }}"]')" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ steps.acct.outputs.id }}:role/ol-gha-plan
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: terraform plan (chỉ đọc, không khóa state)
+        working-directory: infrastructure/envs/${{ matrix.env }}
+        run: |
+          terraform init -input=false -backend-config=backend.hcl
+          terraform plan -input=false -lock=false -no-color -out=tfplan | tee plan.txt
+          {
+            echo "### Plan ${{ matrix.env }}"
+            echo '```'
+            grep -E '^(Plan:|No changes|  # )' plan.txt | head -100
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,51 @@
+# Lệnh vận hành chạy tay, có duyệt theo environment: hiện tại là tạo platform admin đầu tiên.
+name: ops
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        options: [dev, staging, prod]
+      command:
+        type: choice
+        options: [bootstrap-platform-admin]
+      email:
+        description: Email platform admin (nhận link đặt mật khẩu + MFA)
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.env == 'prod' && 'production' || inputs.env }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.13"
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/ol-gha-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Chạy iam-cli
+        env:
+          EMAIL: ${{ inputs.email }}
+          ENV_NAME: ${{ inputs.env }}
+          CMD: ${{ inputs.command }}
+        run: |
+          [[ "$EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[a-z]{2,}$ ]] || { echo "Email không hợp lệ"; exit 1; }
+          source scripts/lib.sh
+          terraform -chdir="infrastructure/envs/$ENV_NAME" init -input=false -backend-config=backend.hcl >/dev/null
+          ip=$(keycloak_ip "$ENV_NAME")
+          overrides=$(jq -nc --arg ip "$ip" --arg email "$EMAIL" --arg cmd "$CMD" \
+            '{containerOverrides:[{name:"iam-cli",command:["node","dist/cli.js",$cmd,"--email",$email],environment:[{name:"KEYCLOAK_INTERNAL_URL",value:("http://"+$ip+":8080")}]}]}')
+          run_task "$ENV_NAME" iam-cli "$overrides"
