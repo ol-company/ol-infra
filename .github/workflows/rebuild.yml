@@ -59,7 +59,7 @@ jobs:
     if: fromJSON(needs.detect.outputs.matrix).include[0] != null
     strategy:
       matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
-    uses: ol-company/ol-build-tooling/.github/workflows/build-image.yml@v1.0.0
+    uses: ol-company/ol-build-tooling/.github/workflows/build-image.yml@v1.0.1
     with:
       module: ${{ matrix.module }}
       source-repository: ${{ matrix.repo }}
