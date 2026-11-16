@@ -49,7 +49,7 @@ jobs:
           done
 
   security:
-    uses: ol-company/ol-build-tooling/.github/workflows/security-scan.yml@v1.0.0
+    uses: ol-company/ol-build-tooling/.github/workflows/security-scan.yml@v1.0.1
     with:
       codeql-languages: ''
     permissions:
